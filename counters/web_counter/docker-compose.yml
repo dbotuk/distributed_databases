@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   web-counter:
     build:
@@ -11,7 +9,19 @@ services:
     environment:
       - HOST=0.0.0.0
       - PORT=8080
+      - STORAGE_METHOD=postgresql
       - STORAGE_PATH=/app/counter.txt
       - WORKERS=4
+      - DB_HOST=postgresql-counter-db
+      - DB_PORT=5432
+      - POSTGRES_DB=counter_db
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    networks:
+      - counter_network
     restart: unless-stopped
 
+networks:
+  counter_network:
+    name: counter_network
+    external: true

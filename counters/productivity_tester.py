@@ -5,7 +5,7 @@ import logging
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from web_counter.utils import get_functions as get_web_counter_functions
-
+from postgresql_counter.utils import get_functions as get_postgresql_counter_functions
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,23 +20,25 @@ logger = logging.getLogger(__name__)
 def get_counter_functions(counter_type: str, params = None):
     if counter_type == "web":
         return get_web_counter_functions()
+    elif counter_type == "postgresql":
+        return get_postgresql_counter_functions()
     else:
         raise ValueError(f"Invalid counter type: {counter_type}")
 
-def run_performance_test(counter_type: str, n_clients: int, n_calls_per_client: int, counter_host: str = 'localhost', counter_port: int = 8080):
+def run_performance_test(counter_type: str, n_clients: int, n_calls_per_client: int, params: dict = None):
     functions = get_counter_functions(counter_type)
     logger.info(f"Starting performance test {counter_type}: {n_clients} clients, {n_calls_per_client} calls per client")
 
     try:
         logger.info(f"Resetting counter")
-        functions["reset"](counter_host, counter_port)
+        functions["reset"](params)
         logger.info(f"Counter reset successfully")
     except Exception as e:
         logger.error(f"Failed to reset counter: {e}")
         return 0, 0, 0, 0
     
     try:
-        initial_count = functions["count"](counter_host, counter_port)
+        initial_count = functions["count"](params)
         logger.info(f"Initial count: {initial_count}")
     except Exception as e:
         logger.error(f"Failed to get initial count: {e}")
@@ -48,7 +50,7 @@ def run_performance_test(counter_type: str, n_clients: int, n_calls_per_client: 
         
         for i in range(n_calls_per_client):
             try:
-                successful = functions["increment"](counter_host, counter_port)
+                successful = functions["increment"](params)
                 if successful:
                     success_count += 1
 
@@ -81,7 +83,7 @@ def run_performance_test(counter_type: str, n_clients: int, n_calls_per_client: 
     total_time = end_time - start_time
     
     try:
-        final_count = functions["count"](counter_host, counter_port)
+        final_count = functions["count"](params)
         logger.info(f"Final count: {final_count}")
     except Exception as e:
         logger.error(f"Failed to get final count: {e}")
@@ -90,7 +92,7 @@ def run_performance_test(counter_type: str, n_clients: int, n_calls_per_client: 
     count_increase = final_count - initial_count
     expected_count = n_clients * n_calls_per_client
     
-    requests_per_second = count_increase / total_time if total_time > 0 else 0
+    requests_per_second = expected_count / total_time if total_time > 0 else 0
     
     logger.info(f"Performance test completed {counter_type}:")
     logger.info(f"  Clients: {n_clients}")
@@ -155,15 +157,40 @@ def main():
         default=int(os.getenv('COUNTER_PORT', '8080')),
         help='Port of the web counter service (default: 8080 or COUNTER_PORT env var)'
     )
+
+    parser.add_argument(
+        '--method',
+        type=str,
+        default=None,
+        help='Method to use for the postgresql counter'
+    )
+
+    parser.add_argument(
+        '--do-retries',
+        type=bool,
+        default=False,
+        help='Do retries for the PostgreSQL counter'
+    )
     
     args = parser.parse_args()
-    
+
+    params = {}
+    if args.counter_type == "web":
+        if args.counter_host:
+            params['counter_host'] = args.counter_host
+        if args.counter_port:
+            params['counter_port'] = args.counter_port
+    if args.counter_type == "postgresql":
+        if args.method:
+            params['method'] = args.method
+        if args.do_retries:
+            params['do_retries'] = args.do_retries
+
     count_increase, total_time, requests_per_second, final_count = run_performance_test(
         counter_type=args.counter_type,
         n_clients=args.n_clients,
         n_calls_per_client=args.n_calls_per_client,
-        counter_host=args.counter_host,
-        counter_port=args.counter_port
+        params=params
     )
     
     print("\n" + "="*60)
@@ -171,7 +198,6 @@ def main():
     print("="*60)
     print(f"Number of clients:           {args.n_clients}")
     print(f"Calls per client:            {args.n_calls_per_client}")
-    print(f"Total calls made:            {count_increase}")
     print(f"Total time (seconds):        {total_time:.2f}")
     print(f"Requests per second (RPS):   {requests_per_second:.2f}")
     print(f"Final count:                 {final_count}")

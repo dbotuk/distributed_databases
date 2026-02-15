@@ -6,7 +6,8 @@ import struct
 from pathlib import Path
 from pydantic import BaseModel
 from multiprocessing import shared_memory
-
+import psycopg2
+import psycopg2.errors
 from fastapi import FastAPI
 import uvicorn
 
@@ -29,34 +30,41 @@ def get_counter_instance():
     if _counter_instance is None:
         host = os.getenv('HOST', '0.0.0.0')
         port = int(os.getenv('PORT', 8080))
+        storage_method = os.getenv('STORAGE_METHOD', 'shared_memory')
         storage_path = os.getenv('STORAGE_PATH', '')
         storage_path = storage_path.strip() if storage_path else ''
         workers = int(os.getenv('WORKERS', '1'))
-        _counter_instance = WebCounter(workers=workers, host=host, port=port, storage_path=storage_path)
+        _counter_instance = WebCounter(workers=workers, host=host, port=port, storage_method=storage_method, storage_path=storage_path)
     return _counter_instance
 
 class WebCounter:
-    def __init__(self, workers=1, host='0.0.0.0', port=8080, storage_path=''):
+    def __init__(self, workers=1, host='0.0.0.0', port=8080, storage_method='shared_memory', storage_path=''):
         self.host = host
         self.port = port
 
-        self.use_disk_storage = bool(storage_path and storage_path.strip())
+        self.storage_method = storage_method
         self.workers = workers
         
-        if self.use_disk_storage:
+        if self.storage_method == "disk":
             logger.info(f"Using disk storage: {storage_path}")
-        else:
+        elif self.storage_method == "shared_memory":
             logger.info(f"Using in-memory storage with shared memory")
+        elif self.storage_method == "postgresql":
+            logger.info(f"Using PostgreSQL storage")
 
-        if self.use_disk_storage:
+        if self.storage_method == "disk":
             self.storage_path = Path(storage_path)
             self.storage_path.parent.mkdir(parents=True, exist_ok=True)
             self._initialize_from_disk()
             self.shared_mem = None
             self.shared_mem_name = None
-        else:
+        elif self.storage_method == "shared_memory":
             self.shared_mem_name = "web_counter_shared"
             self._initialize_shared_memory()
+            self.storage_path = None
+        elif self.storage_method == "postgresql":
+            self.user_id = "1"
+            self._initialize_postgresql(self.user_id)
             self.storage_path = None
 
         self.app = FastAPI(
@@ -67,18 +75,24 @@ class WebCounter:
         self.setup_routes()
 
     async def _read_value(self) -> int:
-        if self.use_disk_storage:
+        if self.storage_method == "disk":
             return await asyncio.to_thread(self._read_from_disk)
-        elif self.shared_mem is not None:
+        elif self.storage_method == "shared_memory":
             return await asyncio.to_thread(self._read_from_shared_memory)
+        elif self.storage_method == "postgresql":
+            return await asyncio.to_thread(self._read_from_postgresql, self.user_id)
+        return 0
 
     async def _write_value(self, value: int):
-        if self.use_disk_storage:
+        if self.storage_method == "disk":
             logger.info(f"Writing value to disk: {value}")
             await asyncio.to_thread(self._write_to_disk, value)
-        elif self.shared_mem is not None:
+        elif self.storage_method == "shared_memory":
             logger.info(f"Writing value to shared memory: {value}")
             await asyncio.to_thread(self._write_to_shared_memory, value)
+        elif self.storage_method == "postgresql":
+            logger.info(f"Writing value to PostgreSQL: {value}")
+            await asyncio.to_thread(self._write_to_postgresql, self.user_id, value)
             
     def _read_from_shared_memory(self):
         return struct.unpack_from('q', self.shared_mem.buf, 0)[0]
@@ -219,6 +233,94 @@ class WebCounter:
                         return 0
         
         return 0
+    
+    def _get_db_connection(self):
+        db_host = os.getenv('DB_HOST', 'localhost')
+        db_port = os.getenv('DB_PORT', '5432')
+        db_name = os.getenv('POSTGRES_DB', 'counter_db')
+        db_user = os.getenv('POSTGRES_USER', 'postgres')
+        db_password = os.getenv('POSTGRES_PASSWORD', 'postgres')
+        
+        return psycopg2.connect(
+            host=db_host,
+            port=db_port,
+            database=db_name,
+            user=db_user,
+            password=db_password
+        )
+
+    def _read_from_postgresql(self, user_id: str) -> int:
+        conn = None
+        cursor = None
+        try:
+            conn = self._get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT counter FROM user_counter WHERE user_id = %s", (user_id,))
+            result = cursor.fetchone()
+            conn.commit()
+            
+            if result is None:
+                return 0
+            return result[0]
+        except psycopg2.Error as e:
+            if conn:
+                conn.rollback()
+            logger.error(f"Error reading from PostgreSQL: {e}")
+            return 0
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+    
+    def _write_to_postgresql(self, user_id: str, value: int):
+        conn = None
+        cursor = None
+        try:
+            conn = self._get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("UPDATE user_counter SET counter = %s WHERE user_id = %s", (value, user_id))
+            conn.commit()
+            logger.info(f"Updated counter value to: {value}")
+        except psycopg2.Error as e:
+            if conn:
+                conn.rollback()
+            logger.error(f"Error writing to PostgreSQL: {e}")
+            raise
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+    
+    def _increment_postgresql(self, user_id: str) -> int:
+        conn = None
+        cursor = None
+        try:
+            conn = self._get_db_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("UPDATE user_counter SET counter = counter + 1 WHERE user_id = %s RETURNING counter", (user_id,))
+            result = cursor.fetchone()
+            conn.commit()
+            
+            if result:
+                new_value = result[0]
+                logger.info(f"Incremented counter to: {new_value}")
+                return new_value
+            else:
+                logger.error(f"UPDATE did not affect any rows for user_id={user_id}. Row may not exist.")
+                raise ValueError(f"Counter row not found for user_id={user_id}")
+        except psycopg2.Error as e:
+            if conn:
+                conn.rollback()
+            logger.error(f"Error incrementing in PostgreSQL: {e}")
+            raise
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
 
     def _initialize_from_disk(self):
         try:
@@ -255,22 +357,80 @@ class WebCounter:
                         except Exception as e:
                             logger.error(f"Failed to attach to shared memory after {max_retries} attempts: {e}")
                             raise
+    
+    def _initialize_postgresql(self, user_id: str):
+        conn = None
+        cursor = None
+        try:
+            conn = self._get_db_connection()
+            cursor = conn.cursor()
+
+            drop_table_query = "DROP TABLE IF EXISTS user_counter;"
+            cursor.execute(drop_table_query)
+            
+            # Create table if it doesn't exist
+            create_table_query = """
+            CREATE TABLE IF NOT EXISTS user_counter (
+                user_id VARCHAR(255) PRIMARY KEY,
+                counter INTEGER NOT NULL DEFAULT 0,
+                version INTEGER NOT NULL DEFAULT 0
+            );
+            """
+            cursor.execute(create_table_query)
+
+            cursor.execute("""
+                INSERT INTO user_counter (user_id, counter, version) 
+                VALUES (%s, %s, %s) 
+                ON CONFLICT (user_id) DO NOTHING
+            """, (user_id, 0, 0))
+            
+            conn.commit()
+            logger.info("PostgreSQL table initialized")
+        except psycopg2.errors.UniqueViolation as e:
+            if conn:
+                conn.rollback()
+            logger.warning(f"Table or type already exists: {e}. Continuing...")
+            try:
+                cursor.execute("""
+                    INSERT INTO user_counter (user_id, counter, version) 
+                    VALUES (%s, %s, %s) 
+                    ON CONFLICT (user_id) DO NOTHING
+                """, (user_id, 0, 0))
+                conn.commit()
+            except Exception:
+                pass
+        except psycopg2.Error as e:
+            if conn:
+                conn.rollback()
+            logger.error(f"Failed to initialize PostgreSQL table: {e}")
+            raise
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
 
     def setup_routes(self):
 
         @self.app.post("/reset")
         async def reset():
-            await self._write_value(0)
+            if self.storage_method == "postgresql":
+                await asyncio.to_thread(self._write_to_postgresql, self.user_id, 0)
+            else:
+                await self._write_value(0)
             return {"status": "ok"}
 
         @self.app.post("/inc")
         async def increment():
-            if self.use_disk_storage:
+            if self.storage_method == "disk":
                 new_count = await asyncio.to_thread(self._increment_disk)
                 logger.info(f"Writing value to disk: {new_count}")
-            elif self.shared_mem is not None:
+            elif self.storage_method == "shared_memory":
                 new_count = await asyncio.to_thread(self._increment_shared_memory)
                 logger.info(f"Incremented shared memory: {new_count}")
+            elif self.storage_method == "postgresql":
+                new_count = await asyncio.to_thread(self._increment_postgresql, self.user_id)
+                logger.info(f"Incremented PostgreSQL: {new_count}")
 
             return {"status": "ok"}
 

@@ -1,0 +1,27 @@
+services:
+  postgresql:
+    image: postgres:15-alpine
+    container_name: postgresql-counter-db
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=counter_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - counter_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+
+networks:
+  counter_network:
+    name: counter_network
