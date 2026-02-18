@@ -12,5 +12,6 @@ EXPOSE 8080
 ENV HOST=0.0.0.0
 ENV PORT=8080
 
-CMD ["sh", "-c", "uvicorn web_counter:app --host ${HOST:-0.0.0.0} --port ${PORT:-8080} --workers ${WORKERS:-1}"]
+# Timeout keep-alive 120s so connections aren't closed while the single worker is busy on Hazelcast.
+CMD ["sh", "-c", "uvicorn web_counter:app --host ${HOST:-0.0.0.0} --port ${PORT:-8080} --workers ${WORKERS:-1} --timeout-keep-alive 120"]
 

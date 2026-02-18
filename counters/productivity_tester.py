@@ -6,6 +6,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from web_counter.utils import get_functions as get_web_counter_functions
 from postgresql_counter.utils import get_functions as get_postgresql_counter_functions
+from hazelcast_counter.utils import get_functions as get_hazelcast_counter_functions
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,12 +23,17 @@ def get_counter_functions(counter_type: str, params = None):
         return get_web_counter_functions()
     elif counter_type == "postgresql":
         return get_postgresql_counter_functions()
+    elif counter_type == "hazelcast":
+        return get_hazelcast_counter_functions()
     else:
         raise ValueError(f"Invalid counter type: {counter_type}")
 
 def run_performance_test(counter_type: str, n_clients: int, n_calls_per_client: int, params: dict = None):
     functions = get_counter_functions(counter_type)
     logger.info(f"Starting performance test {counter_type}: {n_clients} clients, {n_calls_per_client} calls per client")
+
+    connection = functions["setup"](params)
+    params['connection'] = connection
 
     try:
         logger.info(f"Resetting counter")
@@ -89,6 +95,8 @@ def run_performance_test(counter_type: str, n_clients: int, n_calls_per_client: 
         logger.error(f"Failed to get final count: {e}")
         final_count = initial_count
     
+    functions["shutdown"](params)
+    
     count_increase = final_count - initial_count
     expected_count = n_clients * n_calls_per_client
     
@@ -120,6 +128,15 @@ def main():
   
   # Test with custom counter host and port
   python productivity_tester.py --counter-type web --n-clients 5 --n-calls-per-client 10000 --counter-host localhost --counter-port 8080
+  
+  # Hazelcast with pessimistic locking (default, correct count)
+  python productivity_tester.py --counter-type hazelcast --n-clients 10 --n-calls-per-client 1000
+  
+  # Hazelcast without lock (faster, final count may be incorrect)
+  python productivity_tester.py --counter-type hazelcast --n-clients 10 --n-calls-per-client 1000 --method no_lock
+
+  # Hazelcast IAtomicLong (CP Subsystem / Raft, 3 nodes, linearizable)
+  python productivity_tester.py --counter-type hazelcast --n-clients 10 --n-calls-per-client 1000 --method atomic_long
         """
     )
     
@@ -162,7 +179,7 @@ def main():
         '--method',
         type=str,
         default=None,
-        help='Method to use for the postgresql counter'
+        help='Method to use for the non web counter'
     )
 
     parser.add_argument(
@@ -180,9 +197,10 @@ def main():
             params['counter_host'] = args.counter_host
         if args.counter_port:
             params['counter_port'] = args.counter_port
-    if args.counter_type == "postgresql":
+    if args.counter_type in ("postgresql", "hazelcast"):
         if args.method:
             params['method'] = args.method
+    if args.counter_type == "postgresql":
         if args.do_retries:
             params['do_retries'] = args.do_retries
 

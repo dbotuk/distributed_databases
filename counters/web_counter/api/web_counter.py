@@ -51,6 +51,8 @@ class WebCounter:
             logger.info(f"Using in-memory storage with shared memory")
         elif self.storage_method == "postgresql":
             logger.info(f"Using PostgreSQL storage")
+        elif self.storage_method == "hazelcast":
+            logger.info("Using Hazelcast IAtomicLong storage (CP Subsystem / Raft)")
 
         if self.storage_method == "disk":
             self.storage_path = Path(storage_path)
@@ -66,6 +68,13 @@ class WebCounter:
             self.user_id = "1"
             self._initialize_postgresql(self.user_id)
             self.storage_path = None
+        elif self.storage_method == "hazelcast":
+            self._atomic_long = None
+            self.hz_client = None
+            self._initialize_hazelcast()
+            self.storage_path = None
+            self.shared_mem = None
+            self.shared_mem_name = None
 
         self.app = FastAPI(
             title="Web Counter FastAPI Server",
@@ -81,6 +90,8 @@ class WebCounter:
             return await asyncio.to_thread(self._read_from_shared_memory)
         elif self.storage_method == "postgresql":
             return await asyncio.to_thread(self._read_from_postgresql, self.user_id)
+        elif self.storage_method == "hazelcast":
+            return await asyncio.to_thread(self._read_from_hazelcast)
         return 0
 
     async def _write_value(self, value: int):
@@ -93,12 +104,21 @@ class WebCounter:
         elif self.storage_method == "postgresql":
             logger.info(f"Writing value to PostgreSQL: {value}")
             await asyncio.to_thread(self._write_to_postgresql, self.user_id, value)
-            
+        elif self.storage_method == "hazelcast":
+            logger.info(f"Writing value to Hazelcast IAtomicLong: {value}")
+            await asyncio.to_thread(self._write_to_hazelcast, value)
+
     def _read_from_shared_memory(self):
         return struct.unpack_from('q', self.shared_mem.buf, 0)[0]
     
     def _write_to_shared_memory(self, value: int):
         struct.pack_into('q', self.shared_mem.buf, 0, value)
+    
+    def _read_from_hazelcast(self) -> int:
+        return self._atomic_long.get()
+
+    def _write_to_hazelcast(self, value: int):
+        self._atomic_long.set(value)
     
     def _increment_shared_memory(self) -> int:
         lock_file_path = Path('/tmp/web_counter_shared_memory.lock')
@@ -321,6 +341,9 @@ class WebCounter:
                 cursor.close()
             if conn:
                 conn.close()
+    
+    def _increment_hazelcast(self) -> int:
+        return self._atomic_long.increment_and_get()
 
     def _initialize_from_disk(self):
         try:
@@ -409,6 +432,24 @@ class WebCounter:
                 cursor.close()
             if conn:
                 conn.close()
+    
+    def _initialize_hazelcast(self):
+        import hazelcast
+        members_str = os.getenv("HZ_CLUSTER_MEMBERS", "127.0.0.1:5701,127.0.0.1:5702,127.0.0.1:5703")
+        cluster_members = [m.strip() for m in members_str.split(",") if m.strip()]
+        cluster_name = os.getenv("HZ_CLUSTER_NAME", "dev")
+        logging.getLogger("hazelcast").setLevel(logging.ERROR)
+        self.hz_client = hazelcast.HazelcastClient(
+            cluster_members=cluster_members,
+            cluster_name=cluster_name,
+            smart_routing=False,
+            connection_timeout=10.0,
+            invocation_timeout=30.0,
+            redo_operation=True,
+        )
+        atomic_long_name = os.getenv("HZ_ATOMIC_LONG_NAME", "counter")
+        self._atomic_long = self.hz_client.cp_subsystem.get_atomic_long(atomic_long_name).blocking()
+        logger.info("Hazelcast IAtomicLong initialized: name=%s", atomic_long_name)
 
     def setup_routes(self):
 
@@ -416,6 +457,8 @@ class WebCounter:
         async def reset():
             if self.storage_method == "postgresql":
                 await asyncio.to_thread(self._write_to_postgresql, self.user_id, 0)
+            elif self.storage_method == "hazelcast":
+                await asyncio.to_thread(self._write_to_hazelcast, 0)
             else:
                 await self._write_value(0)
             return {"status": "ok"}
@@ -431,6 +474,9 @@ class WebCounter:
             elif self.storage_method == "postgresql":
                 new_count = await asyncio.to_thread(self._increment_postgresql, self.user_id)
                 logger.info(f"Incremented PostgreSQL: {new_count}")
+            elif self.storage_method == "hazelcast":
+                new_count = await asyncio.to_thread(self._increment_hazelcast)
+                logger.info(f"Incremented Hazelcast IAtomicLong: {new_count}")
 
             return {"status": "ok"}
 

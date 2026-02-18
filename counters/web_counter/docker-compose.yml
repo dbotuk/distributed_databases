@@ -9,9 +9,13 @@ services:
     environment:
       - HOST=0.0.0.0
       - PORT=8080
-      - STORAGE_METHOD=postgresql
+      - STORAGE_METHOD=hazelcast
       - STORAGE_PATH=/app/counter.txt
-      - WORKERS=4
+      - WORKERS=1
+      - HZ_CONNECTION_TIMEOUT=30
+      - HZ_INVOCATION_TIMEOUT=60
+      - HZ_CLUSTER_MEMBERS=hazelcast-1:5701,hazelcast-2:5701,hazelcast-3:5701
+      - HZ_CLUSTER_NAME=dev
       - DB_HOST=postgresql-counter-db
       - DB_PORT=5432
       - POSTGRES_DB=counter_db
@@ -24,4 +28,3 @@ services:
 networks:
   counter_network:
     name: counter_network
-    external: true
