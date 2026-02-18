@@ -6,8 +6,9 @@ This project contains multiple counter implementations for distributed database 
 
 1. **Web Counter**: A FastAPI web server that provides an API for incrementing and retrieving a counter value with multiple storage backends
 2. **PostgreSQL Counter**: A direct PostgreSQL-based counter implementation with various concurrency control methods
+3. **Hazelcast Counter**: A Hazelcast-based counter using IMap or CP Subsystem IAtomicLong, with multiple concurrency methods
 
-Both implementations can be tested using the unified `productivity_tester.py` script.
+All implementations can be tested using the unified `productivity_tester.py` script.
 
 ---
 
@@ -278,6 +279,90 @@ export POSTGRES_PASSWORD=postgres
 
 ---
 
+## Hazelcast Counter
+
+### Overview
+
+Hazelcast Counter is a direct Hazelcast-based counter implementation that uses either an IMap (distributed map) or the CP Subsystem's IAtomicLong for linearizable increments. It supports multiple concurrency methods: no locking (for demonstrating lost updates), pessimistic locking, optimistic locking with `replaceIfSame`, and atomic increments via IAtomicLong. It is designed to be used directly via Python functions and is driven by the productivity tester.
+
+### Architecture
+
+- **Cluster**: Hazelcast 5.x (default: 3 members on ports 5701–5703)
+- **Client**: hazelcast-python-client with optional CP Subsystem usage
+- **Storage**: IMap entry (key `count` in map `counter-map`) or IAtomicLong named `counter`
+- **Concurrency**: no_lock, pessimistic (map lock), optimistic (replaceIfSame), or atomic (IAtomicLong)
+
+### Available Methods
+
+1. **`no_lock`** – Read-get, increment, put without locking (can show lost updates)
+2. **`pessimistic`** – Lock key, get/put, unlock (correct, default for tests)
+3. **`optimistic`** – get; put via `replaceIfSame(old, new)` with retries (correct under contention)
+4. **`atomic`** – CP Subsystem IAtomicLong `incrementAndGet()` (linearizable, requires CP Subsystem)
+
+For `atomic`, the cluster must be started with the CP Subsystem (see `hazelcast-cp.yaml`). The default docker-compose runs without CP; uncomment the config/volume lines to use IAtomicLong.
+
+### Environment Variables
+
+- `HZ_CLUSTER_MEMBERS` – Comma-separated member list (default: `127.0.0.1:5701,127.0.0.1:5702,127.0.0.1:5703`)
+- `HZ_CLUSTER_NAME` – Cluster name (default: `dev`)
+- `HZ_MAP_NAME` – IMap name for map-based methods (default: `counter-map`)
+- `HZ_COUNTER_KEY` – Key in the map (default: `count`)
+- `HZ_ATOMIC_LONG_NAME` – IAtomicLong name for `atomic` method (default: `counter`)
+
+### Installation and Setup
+
+#### Option 1: Running with Docker Compose (Recommended)
+
+1. Create the external network (if not already present):
+```bash
+docker network create counter_network
+```
+
+2. Navigate to the `hazelcast_counter` directory:
+```bash
+cd hazelcast_counter
+```
+
+3. Start the Hazelcast cluster (3 members):
+```bash
+docker-compose up -d
+```
+
+For IAtomicLong (`--method atomic`), enable the CP Subsystem by uncommenting the `HAZELCAST_CONFIG` and `volumes` lines in `docker-compose.yml` so that `hazelcast-cp.yaml` is used (CP member count 3).
+
+#### Option 2: Using an Existing Hazelcast Cluster
+
+Set environment variables to point to your cluster:
+```bash
+export HZ_CLUSTER_MEMBERS=host1:5701,host2:5701,host3:5701
+export HZ_CLUSTER_NAME=dev
+```
+
+### Testing (Hazelcast)
+
+**With pessimistic locking (default, correct count):**
+```bash
+python productivity_tester.py --counter-type hazelcast --n-clients 10 --n-calls-per-client 1000
+```
+
+**With no lock (faster, final count may be incorrect):**
+```bash
+python productivity_tester.py --counter-type hazelcast --n-clients 10 --n-calls-per-client 1000 --method no_lock
+```
+
+**With optimistic locking:**
+```bash
+python productivity_tester.py --counter-type hazelcast --n-clients 10 --n-calls-per-client 1000 --method optimistic
+```
+
+**With IAtomicLong (CP Subsystem, linearizable):**
+```bash
+python productivity_tester.py --counter-type hazelcast --n-clients 10 --n-calls-per-client 1000 --method atomic
+```
+(Requires cluster started with `hazelcast-cp.yaml`.)
+
+---
+
 ## Testing
 
 The testing script `productivity_tester.py` is located in the `counters` directory. It uses concurrent threads to simulate multiple clients making requests to either the web counter API or directly to the PostgreSQL counter functions.
@@ -294,14 +379,19 @@ python productivity_tester.py --counter-type web --n-clients <number_of_clients>
 python productivity_tester.py --counter-type postgresql --n-clients <number_of_clients> --n-calls-per-client <calls_per_client> [--method <method>] [--do-retries <True/False>]
 ```
 
+**For Hazelcast Counter:**
+```bash
+python productivity_tester.py --counter-type hazelcast --n-clients <number_of_clients> --n-calls-per-client <calls_per_client> [--method no_lock|pessimistic|optimistic|atomic]
+```
+
 ### Parameters
 
-- `--counter-type` - Type of counter (required): `web` or `postgresql`
+- `--counter-type` - Type of counter (required): `web`, `postgresql`, or `hazelcast`
 - `--n-clients` - Number of concurrent clients (required)
 - `--n-calls-per-client` - Number of calls each client makes (required)
 - `--counter-host` - Server host for web counter (default: `localhost` or `COUNTER_HOST` env var)
 - `--counter-port` - Server port for web counter (default: `8080` or `COUNTER_PORT` env var)
-- `--method` - Method for PostgreSQL counter: `lost_update`, `inplace_update`, `row_level_locking`, `optimistic_concurrency_control`, or `serializable_update`
+- `--method` - Method for PostgreSQL counter: `lost_update`, `inplace_update`, `row_level_locking`, `optimistic_concurrency_control`, or `serializable_update`. For Hazelcast counter: `no_lock`, `pessimistic`, `optimistic`, or `atomic`
 - `--do-retries` - Enable retries for PostgreSQL counter serialization errors (default: `False`)
 
 ### How Testing Works
@@ -435,6 +525,54 @@ python productivity_tester.py --counter-type postgresql --n-clients 10 --n-calls
 
 ---
 
+### Hazelcast Counter Tests
+
+#### Test with Pessimistic Locking (Default)
+
+**Expected Result**: `count = n_clients * n_calls_per_client`
+
+**Command**:
+```bash
+python productivity_tester.py --counter-type hazelcast --n-clients 10 --n-calls-per-client 1000
+```
+
+**Description**: Tests map-based counter with key lock (correct count).
+
+---
+
+#### Test with No Lock
+
+**Command**:
+```bash
+python productivity_tester.py --counter-type hazelcast --n-clients 10 --n-calls-per-client 1000 --method no_lock
+```
+
+**Description**: Demonstrates lost updates on IMap without locking (final count may be less than expected).
+
+---
+
+#### Test with Optimistic Locking
+
+**Command**:
+```bash
+python productivity_tester.py --counter-type hazelcast --n-clients 10 --n-calls-per-client 1000 --method optimistic
+```
+
+**Description**: Tests replaceIfSame-based optimistic concurrency (correct count).
+
+---
+
+#### Test with IAtomicLong (CP Subsystem)
+
+**Command**:
+```bash
+python productivity_tester.py --counter-type hazelcast --n-clients 10 --n-calls-per-client 1000 --method atomic
+```
+
+**Description**: Tests CP Subsystem IAtomicLong (linearizable). Requires cluster started with `hazelcast-cp.yaml`.
+
+---
+
 ## Interpreting Results
 
 After running each test, the script outputs the following information:
@@ -531,6 +669,28 @@ It is recommended to run all tests in all three modes to compare performance:
 
 ---
 
+## Hazelcast Counter Method Comparison
+
+1. **`atomic`** ⭐ Recommended when CP Subsystem is available
+   - ✅ Linearizable (CP Subsystem IAtomicLong)
+   - ✅ Best performance for correct increments
+   - ⚠️ Requires cluster started with CP config (`hazelcast-cp.yaml`)
+
+2. **`pessimistic`** (default)
+   - ✅ Always correct (key-level lock on IMap)
+   - ✅ Good performance, no retries
+
+3. **`optimistic`**
+   - ✅ Always correct (replaceIfSame with retries)
+   - ⚠️ May need many retries under high contention
+
+4. **`no_lock`**
+   - ❌ Incorrect (demonstrates lost updates)
+   - ⚠️ Final count may be less than expected
+   - ⚠️ Use only for educational purposes
+
+---
+
 ## Complete Testing Workflow Example
 
 ### Web Counter Testing
@@ -582,6 +742,30 @@ python productivity_tester.py --counter-type postgresql --n-clients 10 --n-calls
 python productivity_tester.py --counter-type postgresql --n-clients 10 --n-calls-per-client 10000 --method lost_update
 ```
 
+### Hazelcast Counter Testing
+
+```bash
+# 1. Create network and start Hazelcast (in a separate terminal)
+docker network create counter_network  # if needed
+cd hazelcast_counter
+docker-compose up -d
+
+# 2. Run tests (in another terminal, from counters directory)
+cd counters
+
+# Test with pessimistic locking (default)
+python productivity_tester.py --counter-type hazelcast --n-clients 10 --n-calls-per-client 1000
+
+# Test with no lock (demonstrates lost updates)
+python productivity_tester.py --counter-type hazelcast --n-clients 10 --n-calls-per-client 1000 --method no_lock
+
+# Test with optimistic locking
+python productivity_tester.py --counter-type hazelcast --n-clients 10 --n-calls-per-client 1000 --method optimistic
+
+# Test with IAtomicLong (requires CP Subsystem in cluster)
+python productivity_tester.py --counter-type hazelcast --n-clients 10 --n-calls-per-client 1000 --method atomic
+```
+
 ---
 
 ## Project Structure
@@ -590,17 +774,24 @@ python productivity_tester.py --counter-type postgresql --n-clients 10 --n-calls
 counters/
 ├── README.md                    # This file
 ├── requirements.txt             # Python dependencies
-├── productivity_tester.py      # Performance testing script
+├── productivity_tester.py       # Performance testing script
 ├── web_counter/
 │   ├── docker-compose.yml       # Docker Compose configuration
 │   ├── utils.py                 # HTTP client utilities
 │   └── api/
 │       ├── Dockerfile           # Docker image definition
 │       └── web_counter.py       # Main FastAPI application
-└── postgresql_counter/
-    ├── docker-compose.yml       # PostgreSQL database configuration
-    ├── utils.py                 # PostgreSQL counter utilities
-    └── postgresql_counter.py    # PostgreSQL counter implementation
+├── postgresql_counter/
+│   ├── docker-compose.yml       # PostgreSQL database configuration
+│   ├── utils.py                 # Tester interface (get_functions)
+│   ├── postgresql_counter.py    # PostgreSQL counter implementation
+│   └── __init__.py
+└── hazelcast_counter/
+    ├── docker-compose.yml       # Hazelcast cluster (3 members)
+    ├── hazelcast-cp.yaml        # Optional CP Subsystem config for IAtomicLong
+    ├── hazelcast_counter.py     # Hazelcast counter implementation
+    ├── utils.py                 # Tester interface (get_functions)
+    └── __init__.py
 ```
 
 ---
@@ -644,7 +835,8 @@ The implementation uses different synchronization mechanisms depending on storag
 - For best performance with multiple workers, use shared memory or PostgreSQL storage
 - Disk storage is recommended for single-worker deployments or when persistence is required
 - For PostgreSQL counter, always use `--do-retries True` with `serializable_update` method for correctness
-- The `lost_update` method is intentionally incorrect and should only be used to demonstrate concurrency problems
+- The `lost_update` method (PostgreSQL) and `no_lock` method (Hazelcast) are intentionally incorrect and should only be used to demonstrate concurrency problems
+- For Hazelcast `atomic` method, start the cluster with `hazelcast-cp.yaml` (uncomment config in docker-compose)
 
 ---
 
@@ -666,6 +858,15 @@ If you get a PostgreSQL connection error, make sure:
 - Port 5432 is available and not blocked by firewall
 - Database `counter_db` exists (created automatically on first run)
 
+### Connection Error (Hazelcast Counter)
+
+If you get a Hazelcast connection error, make sure:
+- The Hazelcast cluster is running (`docker-compose ps` in `hazelcast_counter` directory)
+- `counter_network` exists: `docker network create counter_network`
+- `HZ_CLUSTER_MEMBERS` matches your members (default: `127.0.0.1:5701,127.0.0.1:5702,127.0.0.1:5703`)
+- Ports 5701–5703 are not blocked by firewall
+- For `--method atomic`, the cluster is started with CP Subsystem (`hazelcast-cp.yaml` mounted and enabled in docker-compose)
+
 ### Incorrect Count Value
 
 If `final_count` doesn't match the expected value:
@@ -685,6 +886,12 @@ If `final_count` doesn't match the expected value:
 - Verify database connection and table initialization
 - Ensure sufficient database resources (connections, memory)
 
+**For Hazelcast Counter:**
+- If using `no_lock` method, incorrect count is expected (demonstrates lost updates)
+- For `atomic` method, ensure the cluster is started with CP Subsystem (`hazelcast-cp.yaml`)
+- Check that all cluster members are reachable and the client can connect
+- For `optimistic`, high contention may cause many retries; consider `pessimistic` or `atomic`
+
 ### Performance Issues
 
 If RPS is lower than expected:
@@ -702,6 +909,11 @@ If RPS is lower than expected:
 - Check for serialization failures in logs (may indicate need for retries)
 - Consider database connection pooling if applicable
 
+**For Hazelcast Counter:**
+- Use `atomic` method (with CP Subsystem) for best performance and correctness
+- Use `pessimistic` as default when CP is not enabled
+- Ensure the cluster has enough resources and low network latency
+
 ### Shared Memory Issues
 
 If you encounter shared memory errors:
@@ -718,3 +930,12 @@ If you encounter PostgreSQL errors:
 - Check table exists: `SELECT * FROM user_counter;`
 - Ensure sufficient database connections (check `max_connections` setting)
 - For serialization errors, use `--do-retries True` flag
+
+### Hazelcast Issues
+
+If you encounter Hazelcast errors:
+- Check member logs: `docker-compose logs` (in `hazelcast_counter` directory)
+- Ensure `counter_network` exists and containers are on it
+- For CP Subsystem (`atomic` method): use `hazelcast-cp.yaml` and set `cp-member-count: 3`; uncomment the config/volume in docker-compose
+- For connection timeouts, increase `connection_timeout` in code or check firewall/ports
+- Optimistic method can raise after max retries under heavy contention; use `pessimistic` or `atomic` for stability
