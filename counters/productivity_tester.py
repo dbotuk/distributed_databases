@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from web_counter.utils import get_functions as get_web_counter_functions
 from postgresql_counter.utils import get_functions as get_postgresql_counter_functions
 from hazelcast_counter.utils import get_functions as get_hazelcast_counter_functions
+from mongodb_counter.utils import get_functions as get_mongodb_counter_functions
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,6 +26,8 @@ def get_counter_functions(counter_type: str, params = None):
         return get_postgresql_counter_functions()
     elif counter_type == "hazelcast":
         return get_hazelcast_counter_functions()
+    elif counter_type == "mongodb":
+        return get_mongodb_counter_functions()
     else:
         raise ValueError(f"Invalid counter type: {counter_type}")
 
@@ -137,6 +140,9 @@ def main():
 
   # Hazelcast IAtomicLong (CP Subsystem / Raft, 3 nodes, linearizable)
   python productivity_tester.py --counter-type hazelcast --n-clients 10 --n-calls-per-client 1000 --method atomic_long
+
+  # MongoDB (atomic $inc, default)
+  python productivity_tester.py --counter-type mongodb --n-clients 10 --n-calls-per-client 1000
         """
     )
     
@@ -200,7 +206,7 @@ def main():
     if args.counter_type in ("postgresql", "hazelcast"):
         if args.method:
             params['method'] = args.method
-    if args.counter_type == "postgresql":
+    if args.counter_type in ("postgresql"):
         if args.do_retries:
             params['do_retries'] = args.do_retries
 
