@@ -1,6 +1,6 @@
 # Distributed Databases — Counter Performance Tester
 
-A homework project for comparing performance and correctness of distributed counters implemented with different backends: **Web API**, **PostgreSQL**, **Hazelcast**, and **MongoDB**. A single productivity tester runs concurrent clients against any backend and reports throughput (requests per second) and final count.
+A homework project for comparing performance and correctness of distributed counters implemented with different backends: **Web API**, **PostgreSQL**, **Hazelcast**, **MongoDB**, **Cassandra**, and **Neo4j**. A single productivity tester runs concurrent clients against any backend and reports throughput (requests per second) and final count.
 
 ## Project structure
 
@@ -22,13 +22,27 @@ Homework/
 │   │   ├── utils.py
 │   │   ├── hazelcast_counter.py
 │   │   └── docker-compose.yml    # 3-node Hazelcast cluster
-│   └── mongodb_counter/          # Direct MongoDB counter client (atomic $inc)
+│   ├── mongodb_counter/          # Direct MongoDB counter client (atomic $inc)
+│   │   ├── utils.py
+│   │   ├── mongodb_counter.py
+│   │   └── __init__.py
+│   ├── cassandra_counter/       # Direct Cassandra counter client (native counter column)
+│   │   ├── utils.py
+│   │   ├── cassandra_counter.py
+│   │   └── __init__.py
+│   └── neo4j_counter/            # Direct Neo4j counter client (Counter node, MERGE/ON MATCH SET)
 │       ├── utils.py
-│       ├── mongodb_counter.py
+│       ├── neo4j_counter.py
 │       └── __init__.py
 ├── mongo/
 │   ├── docker-compose.yml        # MongoDB service for counter
 │   └── e_shop.mongodb.js         # (optional) other MongoDB scripts
+├── cassandra/
+│   ├── docker-compose.yml        # Cassandra cluster for counter
+│   └── e_shop.cql                # (optional) other Cassandra scripts
+├── neo4j/
+│   ├── docker-compose.yml        # Neo4j service for counter
+│   └── e_shop.cypher             # (optional) other Neo4j scripts
 └── README.md
 ```
 
@@ -39,6 +53,8 @@ Homework/
 - For **postgresql**: running PostgreSQL (connection via env or code defaults).
 - For **hazelcast**: running Hazelcast cluster (e.g. `counters/hazelcast_counter/docker-compose.yml`).
 - For **mongodb**: running MongoDB (e.g. `mongo/docker-compose.yml`).
+- For **cassandra**: running Cassandra (e.g. `cassandra/docker-compose.yml`).
+- For **neo4j**: running Neo4j (e.g. `neo4j/docker-compose.yml`).
 
 ## Setup
 
@@ -76,6 +92,22 @@ cd mongo
 docker compose up -d
 ```
 
+**Cassandra (for `--counter-type cassandra`):**
+
+```bash
+cd cassandra
+docker compose up -d
+# Wait for nodes to be ready (e.g. 30–60 s), then run the tester
+```
+
+**Neo4j (for `--counter-type neo4j`):**
+
+```bash
+cd neo4j
+docker compose up -d
+# Default: neo4j://localhost:7687, user neo4j, password password
+```
+
 **PostgreSQL:** start your PostgreSQL instance and set `DB_HOST`, `DB_PORT`, etc. as required by `postgresql_counter` / web counter.
 
 ## Usage
@@ -91,7 +123,7 @@ python productivity_tester.py --counter-type <TYPE> --n-clients <N> --n-calls-pe
 
 | Argument | Required | Description |
 |----------|----------|-------------|
-| `--counter-type` | Yes | One of: `web`, `postgresql`, `hazelcast`, `mongodb` |
+| `--counter-type` | Yes | One of: `web`, `postgresql`, `hazelcast`, `mongodb`, `cassandra`, `neo4j` |
 | `--n-clients` | Yes | Number of concurrent client threads |
 | `--n-calls-per-client` | Yes | Number of increment calls per client |
 | `--counter-host` | No | Web counter host (default: `localhost` or `COUNTER_HOST`) |
@@ -124,6 +156,16 @@ python productivity_tester.py --counter-type <TYPE> --n-clients <N> --n-calls-pe
 - No extra CLI flags. Uses atomic `$inc` on a single document.
 - Connection: env `MONGO_HOST`, `MONGO_PORT`, `MONGO_DB`, or `MONGO_URI` (see `mongodb_counter/mongodb_counter.py`).
 
+**Cassandra** (`--counter-type cassandra`)
+
+- No extra CLI flags. Uses native counter column with atomic `UPDATE ... SET counter = counter + 1`.
+- Connection: env `CASSANDRA_HOST`, `CASSANDRA_PORT` (default: `localhost`, `9042`).
+
+**Neo4j** (`--counter-type neo4j`)
+
+- No extra CLI flags. Uses a single Counter node with atomic `MERGE ... ON MATCH SET c.value = c.value + 1`.
+- Connection: env `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD` (default: `neo4j://localhost:7687`, `neo4j`, `password`).
+
 ### Example runs
 
 ```bash
@@ -144,6 +186,12 @@ python productivity_tester.py --counter-type hazelcast --n-clients 10 --n-calls-
 
 # MongoDB (atomic $inc)
 python productivity_tester.py --counter-type mongodb --n-clients 10 --n-calls-per-client 1000
+
+# Cassandra (native counter column, atomic)
+python productivity_tester.py --counter-type cassandra --n-clients 10 --n-calls-per-client 1000
+
+# Neo4j (Counter node, atomic MERGE/ON MATCH SET)
+python productivity_tester.py --counter-type neo4j --n-clients 10 --n-calls-per-client 1000
 
 # PostgreSQL with retries (e.g. for OCC)
 python productivity_tester.py --counter-type postgresql --n-clients 10 --n-calls-per-client 1000 --method optimistic_concurrency_control --do-retries True
@@ -174,6 +222,8 @@ You can compare **RPS** and **final count vs expected** (N×M) across backends a
 - `psycopg2-binary` — PostgreSQL client
 - `hazelcast-python-client` — Hazelcast client
 - `pymongo` — MongoDB client
+- `cassandra-driver` — Cassandra client
+- `neo4j` — Neo4j Python driver
 
 ## Environment variables (overview)
 
@@ -183,6 +233,8 @@ You can compare **RPS** and **final count vs expected** (N×M) across backends a
 | PostgreSQL | DB connection (host, port, db, user, password) as in `postgresql_counter` / web counter |
 | Hazelcast | `HZ_CLUSTER_MEMBERS`, `HZ_CLUSTER_NAME`, `HZ_MAP_NAME`, `HZ_COUNTER_KEY`, `HZ_ATOMIC_LONG_NAME` |
 | MongoDB | `MONGO_HOST`, `MONGO_PORT`, `MONGO_DB`, `MONGO_URI` |
+| Cassandra | `CASSANDRA_HOST`, `CASSANDRA_PORT` |
+| Neo4j | `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD` |
 
 ## License / course
 
