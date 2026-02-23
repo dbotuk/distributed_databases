@@ -8,7 +8,7 @@ COUNTER_ID = "default"
 
 
 def get_connection():
-    uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+    uri = os.getenv("NEO4J_URI", "neo4j://localhost:7687")
     user = os.getenv("NEO4J_USER", "neo4j")
     password = os.getenv("NEO4J_PASSWORD", "password")
     driver = GraphDatabase.driver(uri, auth=(user, password))
@@ -18,7 +18,6 @@ def get_connection():
 
 
 def _ensure_counter_constraint(driver):
-    """Create uniqueness constraint on Counter.id if not exists."""
     with driver.session() as session:
         session.run(
             "CREATE CONSTRAINT counter_id_unique IF NOT EXISTS "
