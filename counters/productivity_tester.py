@@ -8,6 +8,7 @@ from web_counter.utils import get_functions as get_web_counter_functions
 from postgresql_counter.utils import get_functions as get_postgresql_counter_functions
 from hazelcast_counter.utils import get_functions as get_hazelcast_counter_functions
 from mongodb_counter.utils import get_functions as get_mongodb_counter_functions
+from cassandra_counter.utils import get_functions as get_cassandra_counter_functions
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,6 +29,8 @@ def get_counter_functions(counter_type: str, params = None):
         return get_hazelcast_counter_functions()
     elif counter_type == "mongodb":
         return get_mongodb_counter_functions()
+    elif counter_type == "cassandra":
+        return get_cassandra_counter_functions()
     else:
         raise ValueError(f"Invalid counter type: {counter_type}")
 
@@ -143,6 +146,9 @@ def main():
 
   # MongoDB (atomic $inc, default)
   python productivity_tester.py --counter-type mongodb --n-clients 10 --n-calls-per-client 1000
+
+  # Cassandra (native counter column, atomic)
+  python productivity_tester.py --counter-type cassandra --n-clients 10 --n-calls-per-client 1000
         """
     )
     
