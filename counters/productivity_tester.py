@@ -9,6 +9,7 @@ from postgresql_counter.utils import get_functions as get_postgresql_counter_fun
 from hazelcast_counter.utils import get_functions as get_hazelcast_counter_functions
 from mongodb_counter.utils import get_functions as get_mongodb_counter_functions
 from cassandra_counter.utils import get_functions as get_cassandra_counter_functions
+from neo4j_counter.utils import get_functions as get_neo4j_counter_functions
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,6 +32,8 @@ def get_counter_functions(counter_type: str, params = None):
         return get_mongodb_counter_functions()
     elif counter_type == "cassandra":
         return get_cassandra_counter_functions()
+    elif counter_type == "neo4j":
+        return get_neo4j_counter_functions()
     else:
         raise ValueError(f"Invalid counter type: {counter_type}")
 
@@ -149,6 +152,9 @@ def main():
 
   # Cassandra (native counter column, atomic)
   python productivity_tester.py --counter-type cassandra --n-clients 10 --n-calls-per-client 1000
+
+  # Neo4j (Counter node, atomic MERGE/ON MATCH SET)
+  python productivity_tester.py --counter-type neo4j --n-clients 10 --n-calls-per-client 1000
         """
     )
     

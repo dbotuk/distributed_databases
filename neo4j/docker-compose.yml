@@ -1,0 +1,27 @@
+services:
+  neo4j:
+    image: neo4j:5
+    container_name: neo4j-db
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: neo4j/password
+    volumes:
+      - neo4j_data:/data
+    networks:
+      - neo4j_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7474"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  neo4j_data:
+
+networks:
+  neo4j_net:
+    name: neo4j_net
+    driver: bridge
