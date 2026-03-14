@@ -90,6 +90,31 @@ docker compose up -d
 docker network create counter_network   # if not exists
 cd mongo
 docker compose up -d
+
+# verify replica set status
+docker exec -it mongo1 mongosh --eval "rs.status().set"
+
+# use replica set URI for failover-safe client connections
+export MONGO_URI="mongodb://localhost:27017,localhost:27018,localhost:27019/counter_db?replicaSet=rs0"
+```
+
+MongoDB in this repository runs as a 3-member replica set (`P-S-S`): `mongo1` (preferred primary), `mongo2`, `mongo3`.
+
+**MongoDB failover check (manual):**
+
+```bash
+# 1) Check current PRIMARY
+docker exec -it mongo1 mongosh --quiet --eval "db.hello().primary"
+
+# 2) Stop current primary (example: mongo1)
+docker stop mongo1
+
+# 3) Wait ~10-20 seconds and verify a new PRIMARY is elected
+docker exec -it mongo2 mongosh --quiet --eval "db.hello().isWritablePrimary"
+docker exec -it mongo3 mongosh --quiet --eval "db.hello().isWritablePrimary"
+
+# 4) Start stopped node back
+docker start mongo1
 ```
 
 **Cassandra (for `--counter-type cassandra`):**

@@ -14,5 +14,10 @@ def get_functions():
         "shutdown": lambda params: close_connection(params.get("connection")),
         "reset": lambda params: init_user_counter_table(DEFAULT_USER_ID, params.get("connection")),
         "count": lambda params: get_user_counter(DEFAULT_USER_ID, params.get("connection")),
-        "increment": lambda params: increment(DEFAULT_USER_ID, params.get("connection")),
+        "increment": lambda params: increment(
+            DEFAULT_USER_ID,
+            params.get("connection"),
+            method=params.get("method", "find_one_and_update"),
+            write_concern=params.get("write_concern", 1),
+        ),
     }

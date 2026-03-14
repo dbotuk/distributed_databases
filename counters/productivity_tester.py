@@ -206,6 +206,13 @@ def main():
         default=False,
         help='Do retries for the PostgreSQL counter'
     )
+
+    parser.add_argument(
+        '--write-concern',
+        type=str,
+        default=None,
+        help='Write concern for MongoDB counter operations'
+    )
     
     args = parser.parse_args()
 
@@ -215,12 +222,17 @@ def main():
             params['counter_host'] = args.counter_host
         if args.counter_port:
             params['counter_port'] = args.counter_port
-    if args.counter_type in ("postgresql", "hazelcast"):
+    if args.counter_type in ("postgresql", "hazelcast", "mongodb"):
         if args.method:
             params['method'] = args.method
     if args.counter_type in ("postgresql"):
         if args.do_retries:
             params['do_retries'] = args.do_retries
+    if args.counter_type == "mongodb" and args.write_concern is not None:
+        if args.write_concern.isdigit():
+            params['write_concern'] = int(args.write_concern)
+        else:
+            params['write_concern'] = args.write_concern
 
     count_increase, total_time, requests_per_second, final_count = run_performance_test(
         counter_type=args.counter_type,
