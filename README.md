@@ -88,17 +88,39 @@ docker compose up -d
 
 ```bash
 docker network create counter_network   # if not exists
-cd mongo
+cd mongo-with-replication
 docker compose up -d
 
 # verify replica set status
-docker exec -it mongo1 mongosh --eval "rs.status().set"
+docker exec -it mongo1 mongosh --eval "rs.status().members.map(m => ({name: m.name, state: m.stateStr}))"
 
-# use replica set URI for failover-safe client connections
-export MONGO_URI="mongodb://localhost:27017,localhost:27018,localhost:27019/counter_db?replicaSet=rs0"
+# if auto-init did not run, initialize manually once
+docker exec -it mongo1 mongosh --eval '
+rs.initiate({
+  _id: "rs0",
+  members: [
+    { _id: 0, host: "mongo1:27017", priority: 2 },
+    { _id: 1, host: "mongo2:27017", priority: 1 },
+    { _id: 2, host: "mongo3:27017", priority: 1 }
+  ]
+})
+'
 ```
 
 MongoDB in this repository runs as a 3-member replica set (`P-S-S`): `mongo1` (preferred primary), `mongo2`, `mongo3`.
+
+For local benchmarking from the host machine against the current primary only:
+
+```bash
+cd counters
+export MONGO_URI="mongodb://localhost:27017/counter_db?directConnection=true&serverSelectionTimeoutMS=5000"
+```
+
+For failover experiments, run the client inside Docker network `counter_network` with:
+
+```bash
+MONGO_URI="mongodb://mongo1:27017,mongo2:27017,mongo3:27017/counter_db?replicaSet=rs0"
+```
 
 **MongoDB failover check (manual):**
 
@@ -121,9 +143,19 @@ docker start mongo1
 
 ```bash
 cd cassandra
+docker compose down -v --remove-orphans
 docker compose up -d
-# Wait for nodes to be ready (e.g. 30–60 s), then run the tester
+
+# wait until all nodes are healthy, then verify the ring
+docker exec cassandra-node1 nodetool status
+# expected: 3 nodes with status UN in datacenter1
 ```
+
+For this repository, Cassandra is configured as a 3-node cluster:
+
+- `cassandra-node1` is the single seed node.
+- `cassandra-node2` and `cassandra-node3` join after `cassandra-node1` becomes healthy.
+- Persistent volumes are used per node, so `docker compose down -v --remove-orphans` is recommended before a fresh bootstrap to avoid stale gossip / host identity conflicts from previous runs.
 
 **Neo4j (for `--counter-type neo4j`):**
 
@@ -154,6 +186,7 @@ python productivity_tester.py --counter-type <TYPE> --n-clients <N> --n-calls-pe
 | `--counter-host` | No | Web counter host (default: `localhost` or `COUNTER_HOST`) |
 | `--counter-port` | No | Web counter port (default: `8080` or `COUNTER_PORT`) |
 | `--method` | No | Backend-specific method (see below) |
+| `--write-concern` | No | MongoDB write concern, e.g. `1` or `majority` |
 | `--do-retries` | No | Use retries for PostgreSQL (default: `False`) |
 
 ### Counter-type–specific options
@@ -178,7 +211,9 @@ python productivity_tester.py --counter-type <TYPE> --n-clients <N> --n-calls-pe
 
 **MongoDB** (`--counter-type mongodb`)
 
-- No extra CLI flags. Uses atomic `$inc` on a single document.
+- `--method`: `find_one_and_update` or default update-based increment.
+- `--write-concern`: `1` or `majority`.
+- Recommended for the homework counter benchmark: `--method find_one_and_update`.
 - Connection: env `MONGO_HOST`, `MONGO_PORT`, `MONGO_DB`, or `MONGO_URI` (see `mongodb_counter/mongodb_counter.py`).
 
 **Cassandra** (`--counter-type cassandra`)
@@ -209,8 +244,22 @@ python productivity_tester.py --counter-type hazelcast --n-clients 10 --n-calls-
 # Hazelcast IAtomicLong (CP Subsystem)
 python productivity_tester.py --counter-type hazelcast --n-clients 10 --n-calls-per-client 1000 --method atomic
 
-# MongoDB (atomic $inc)
-python productivity_tester.py --counter-type mongodb --n-clients 10 --n-calls-per-client 1000
+# MongoDB benchmark from host to current primary only (writeConcern=1)
+MONGO_URI="mongodb://localhost:27017/counter_db?directConnection=true&serverSelectionTimeoutMS=5000" \
+python productivity_tester.py --counter-type mongodb --n-clients 10 --n-calls-per-client 10000 --method find_one_and_update --write-concern 1
+
+# MongoDB benchmark with writeConcern=majority
+MONGO_URI="mongodb://localhost:27017/counter_db?directConnection=true&serverSelectionTimeoutMS=5000" \
+python productivity_tester.py --counter-type mongodb --n-clients 10 --n-calls-per-client 10000 --method find_one_and_update --write-concern majority
+
+# MongoDB failover-aware benchmark inside Docker network
+docker run --rm \
+  --network counter_network \
+  -v "$PWD:/workspace" \
+  -w /workspace/counters \
+  -e MONGO_URI="mongodb://mongo1:27017,mongo2:27017,mongo3:27017/counter_db?replicaSet=rs0" \
+  python:3.11-slim \
+  bash -lc "pip install -r requirements.txt && python productivity_tester.py --counter-type mongodb --n-clients 10 --n-calls-per-client 10000 --method find_one_and_update --write-concern 1"
 
 # Cassandra (native counter column, atomic)
 python productivity_tester.py --counter-type cassandra --n-clients 10 --n-calls-per-client 1000
