@@ -4,12 +4,6 @@ import time
 import logging
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from web_counter.utils import get_functions as get_web_counter_functions
-from postgresql_counter.utils import get_functions as get_postgresql_counter_functions
-from hazelcast_counter.utils import get_functions as get_hazelcast_counter_functions
-from mongodb_counter.utils import get_functions as get_mongodb_counter_functions
-from cassandra_counter.utils import get_functions as get_cassandra_counter_functions
-from neo4j_counter.utils import get_functions as get_neo4j_counter_functions
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,16 +17,22 @@ logger = logging.getLogger(__name__)
 
 def get_counter_functions(counter_type: str, params = None):
     if counter_type == "web":
+        from web_counter.utils import get_functions as get_web_counter_functions
         return get_web_counter_functions()
     elif counter_type == "postgresql":
+        from postgresql_counter.utils import get_functions as get_postgresql_counter_functions
         return get_postgresql_counter_functions()
     elif counter_type == "hazelcast":
+        from hazelcast_counter.utils import get_functions as get_hazelcast_counter_functions
         return get_hazelcast_counter_functions()
     elif counter_type == "mongodb":
+        from mongodb_counter.utils import get_functions as get_mongodb_counter_functions
         return get_mongodb_counter_functions()
     elif counter_type == "cassandra":
+        from cassandra_counter.utils import get_functions as get_cassandra_counter_functions
         return get_cassandra_counter_functions()
     elif counter_type == "neo4j":
+        from neo4j_counter.utils import get_functions as get_neo4j_counter_functions
         return get_neo4j_counter_functions()
     else:
         raise ValueError(f"Invalid counter type: {counter_type}")

@@ -40,6 +40,9 @@ Homework/
 ├── cassandra/
 │   ├── docker-compose.yml        # Cassandra cluster for counter
 │   └── e_shop.cql                # (optional) other Cassandra scripts
+├── cassandra-with-replication/
+│   ├── docker-compose.yml        # Separate 3-node Cassandra cluster for replication experiments
+│   └── replication_guide.md      # Manual step-by-step guide for Task 8
 ├── neo4j/
 │   ├── docker-compose.yml        # Neo4j service for counter
 │   └── e_shop.cypher             # (optional) other Neo4j scripts
@@ -54,6 +57,7 @@ Homework/
 - For **hazelcast**: running Hazelcast cluster (e.g. `counters/hazelcast_counter/docker-compose.yml`).
 - For **mongodb**: running MongoDB (e.g. `mongo/docker-compose.yml`).
 - For **cassandra**: running Cassandra (e.g. `cassandra/docker-compose.yml`).
+- For **Cassandra replication experiments**: running the 3-node cluster in `cassandra-with-replication/`.
 - For **neo4j**: running Neo4j (e.g. `neo4j/docker-compose.yml`).
 
 ## Setup
@@ -139,23 +143,68 @@ docker exec -it mongo3 mongosh --quiet --eval "db.hello().isWritablePrimary"
 docker start mongo1
 ```
 
-**Cassandra (for `--counter-type cassandra`):**
+**Cassandra replication cluster (Task 8):**
+
+Use the dedicated folder `cassandra-with-replication/` for manual replication and consistency experiments.
 
 ```bash
-cd cassandra
+cd cassandra-with-replication
 docker compose down -v --remove-orphans
-docker compose up -d
 
-# wait until all nodes are healthy, then verify the ring
+# start nodes sequentially
+docker compose up -d cassandra-node1
 docker exec cassandra-node1 nodetool status
-# expected: 3 nodes with status UN in datacenter1
+
+docker compose up -d cassandra-node2
+docker exec cassandra-node2 nodetool status
+
+docker compose up -d cassandra-node3
+docker exec cassandra-node1 nodetool status
 ```
 
-For this repository, Cassandra is configured as a 3-node cluster:
+Wait until every node appears as `UN` before starting the next one.
 
-- `cassandra-node1` is the single seed node.
-- `cassandra-node2` and `cassandra-node3` join after `cassandra-node1` becomes healthy.
-- Persistent volumes are used per node, so `docker compose down -v --remove-orphans` is recommended before a fresh bootstrap to avoid stale gossip / host identity conflicts from previous runs.
+See [cassandra-with-replication/replication_guide.md](/Users/denisbotuk/Documents/UCU%20(DS%20+%20DE)/Distributed%20Databases/Homework/cassandra-with-replication/replication_guide.md) for the full manual workflow:
+
+- creating keyspaces with `SimpleStrategy` and replication factor `1`, `2`, `3`;
+- creating tables and testing reads/writes through different nodes;
+- checking replica placement with `nodetool getendpoints`;
+- testing consistency levels with one stopped node;
+- network partition and conflict experiments;
+- lightweight transaction (LWT) behaviour in normal and partitioned cluster states.
+
+**Cassandra counter benchmark (for `--counter-type cassandra`):**
+
+```bash
+cd counters
+
+# RF=3 counter table in keyspace_rf3, Consistency ONE
+CASSANDRA_HOST=localhost \
+CASSANDRA_PORT=9042 \
+CASSANDRA_KEYSPACE=keyspace_rf3 \
+CASSANDRA_COUNTER_TABLE=likes_counter \
+CASSANDRA_CONSISTENCY=ONE \
+python productivity_tester.py --counter-type cassandra --n-clients 10 --n-calls-per-client 10000
+
+# RF=3 counter table in keyspace_rf3, Consistency QUORUM
+CASSANDRA_HOST=localhost \
+CASSANDRA_PORT=9042 \
+CASSANDRA_KEYSPACE=keyspace_rf3 \
+CASSANDRA_COUNTER_TABLE=likes_counter \
+CASSANDRA_CONSISTENCY=QUORUM \
+python productivity_tester.py --counter-type cassandra --n-clients 10 --n-calls-per-client 10000
+```
+
+The Cassandra counter client now supports:
+
+- `CASSANDRA_KEYSPACE` - target keyspace, e.g. `keyspace_rf3`
+- `CASSANDRA_COUNTER_TABLE` - counter table name, e.g. `likes_counter`
+- `CASSANDRA_CONSISTENCY` - `ONE`, `QUORUM`, etc.
+
+Observed benchmark results for `10` clients x `10000` increments:
+
+- `CONSISTENCY ONE`: `Final count = 100000`, `Total time = 50.19s`, `RPS = 1992.54`
+- `CONSISTENCY QUORUM`: `Final count = 100000`, `Total time = 65.53s`, `RPS = 1525.96`
 
 **Neo4j (for `--counter-type neo4j`):**
 
@@ -220,6 +269,10 @@ python productivity_tester.py --counter-type <TYPE> --n-clients <N> --n-calls-pe
 
 - No extra CLI flags. Uses native counter column with atomic `UPDATE ... SET counter = counter + 1`.
 - Connection: env `CASSANDRA_HOST`, `CASSANDRA_PORT` (default: `localhost`, `9042`).
+- Optional env:
+  - `CASSANDRA_KEYSPACE` - default `keyspace_rf3`
+  - `CASSANDRA_COUNTER_TABLE` - default `likes_counter`
+  - `CASSANDRA_CONSISTENCY` - default `ONE`
 
 **Neo4j** (`--counter-type neo4j`)
 
@@ -261,8 +314,13 @@ docker run --rm \
   python:3.11-slim \
   bash -lc "pip install -r requirements.txt && python productivity_tester.py --counter-type mongodb --n-clients 10 --n-calls-per-client 10000 --method find_one_and_update --write-concern 1"
 
-# Cassandra (native counter column, atomic)
-python productivity_tester.py --counter-type cassandra --n-clients 10 --n-calls-per-client 1000
+# Cassandra counter with Consistency ONE
+CASSANDRA_KEYSPACE=keyspace_rf3 CASSANDRA_COUNTER_TABLE=likes_counter CASSANDRA_CONSISTENCY=ONE \
+python productivity_tester.py --counter-type cassandra --n-clients 10 --n-calls-per-client 10000
+
+# Cassandra counter with Consistency QUORUM
+CASSANDRA_KEYSPACE=keyspace_rf3 CASSANDRA_COUNTER_TABLE=likes_counter CASSANDRA_CONSISTENCY=QUORUM \
+python productivity_tester.py --counter-type cassandra --n-clients 10 --n-calls-per-client 10000
 
 # Neo4j (Counter node, atomic MERGE/ON MATCH SET)
 python productivity_tester.py --counter-type neo4j --n-clients 10 --n-calls-per-client 1000
